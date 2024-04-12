@@ -1,0 +1,86 @@
+import yfinance as yf
+import pandas as pd
+import pandas_datareader.data as web
+import statsmodels.api as sm
+import numpy as np
+from scipy.stats import gmean
+import matplotlib.pyplot as plt
+import datetime as dt
+
+# User inputs
+ticker = input("Enter the ticker symbol (e.g., 'AMZN'): ")
+
+#Stock name
+stock_info = yf.Ticker(ticker)
+company_name = stock_info.info['longName']
+
+# Download stock time data
+startDate = '2020-01-01'
+endDate = dt.datetime.now()
+
+stock = yf.download(ticker, start=startDate, end=endDate, interval='1mo')
+
+# Calculate monthly returns
+stock['Returns'] = stock['Adj Close'].pct_change()
+
+# Adjust index to period type
+stock.index = pd.to_datetime(stock.index).to_period('M')
+
+# Statistical Overview
+stats = {
+    'Arithmetic Mean': stock['Returns'].mean() * 100,
+    'Geometric Mean': gmean(stock['Returns'].dropna() + 1) - 1,
+    'Highest Return': stock['Returns'].max() * 100,
+    'Lowest Return': stock['Returns'].min() * 100
+}
+
+
+#Plotting of the cumulative return performance with an overview of the means, highest and lowest return values
+stock['Cumulative Returns'] = (1 + stock['Returns']).cumprod() - 1
+plt.figure(figsize=(14, 7))
+plt.plot(stock.index.to_timestamp(), stock['Cumulative Returns'] * 100, color='blue')
+plt.title(f'Cumulative Return Performance of {company_name}')
+plt.xlabel('Time Period')
+plt.ylabel('Cumulative Return (%)')
+plt.grid(True)
+plt.legend()
+
+# Adding statistical overview text
+stats_text = "\n".join([f"{key}: {value:.2f}%" for key, value in stats.items()])
+plt.annotate(stats_text, xy=(0.05, 0.95), xycoords='axes fraction', fontsize=10,
+             verticalalignment='top', horizontalalignment='left',
+             bbox=dict(boxstyle="round,pad=0.3", edgecolor='blue', facecolor='white'))
+plt.show()
+
+# Download Fama-French Factors
+factors = web.DataReader('F-F_Research_Data_Factors', 'famafrench', start=startDate)[0] / 100
+factors.index = pd.to_datetime(factors.index.strftime('%Y-%m')).to_period('M')
+
+# Carhart momentum factor, ensure it's correctly incorporated
+momentum_factor = web.DataReader('F-F_Momentum_Factor', 'famafrench', start=startDate)[0] / 100
+momentum_factor.index = pd.to_datetime(momentum_factor.index.strftime('%Y-%m')).to_period('M')
+momentum_factor.rename(columns={'Mom   ': 'Mom'}, inplace=True)
+
+# Calculate excess returns (Monthly return minus the risk-free rate)
+stock['Excess Returns'] = stock['Returns'] - factors['RF']
+
+# Combine data with factors
+data = pd.concat([stock[['Excess Returns']], factors[['Mkt-RF', 'SMB', 'HML']], momentum_factor['Mom']], axis=1).dropna()
+
+# Regression Function
+def perform_regression(y, X, model_name):
+    X = sm.add_constant(X)
+    model = sm.OLS(y, X).fit()
+    alpha_value = model.params.get('const', 0)
+    alpha_pvalue = model.pvalues.get('const', 1)
+    annualized_alpha = alpha_value * 12  # Annual factor for monthly data
+    significance_statement = f"This financial model shows a statistically significant annualized Alpha of {annualized_alpha:.5f}% with P-value of {alpha_pvalue:.3f}\n" if alpha_pvalue < 0.05 else "This financial model does not display a statistically significant positive alpha.\n"
+    print(f"\n{model_name} Model Results:")
+    print(significance_statement)
+    print(model.summary().as_text().replace('const', 'Alpha'))
+
+
+# Perform and display regressions
+perform_regression(data['Excess Returns'], data[['Mkt-RF']], "CAPM")
+perform_regression(data['Excess Returns'], data[['Mkt-RF', 'SMB', 'HML']], "Fama-French 3-Factor")
+perform_regression(data['Excess Returns'], data[['Mkt-RF', 'SMB', 'HML', 'Mom']], "Carhart Four-Factor")
